@@ -8,6 +8,7 @@ import google.generativeai as genai
 import os
 import json
 import re
+import time
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
@@ -15,7 +16,7 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel(
     "gemini-2.5-flash",
     generation_config=genai.GenerationConfig(
-        max_output_tokens=4096,
+        max_output_tokens=8192,
         temperature=0.1
     )
 )
@@ -57,25 +58,34 @@ def extract_pr_diff(pr_url: str) -> str:
     repo_name = parts[-3]
     pr_number = int(parts[-1])
 
-    print(f"Fetching: owner={owner}, repo={repo_name}, pr={pr_number}") # repo info
+    print(f"Fetching: owner={owner}, repo={repo_name}, pr={pr_number}")
 
     repo = github_client.get_repo(f"{owner}/{repo_name}")
     pr = repo.get_pull(pr_number)
 
     diff_text = f"PR Title: {pr.title}\n"
-    diff_text += f"PR Description: {pr.body}\n\n"
+    diff_text += f"PR Description: {pr.body or 'No description provided'}\n\n"
+    diff_text += f"Files changed: {pr.changed_files}\n"
+    diff_text += f"Total additions: {pr.additions}\n"
+    diff_text += f"Total deletions: {pr.deletions}\n\n"
 
     files = pr.get_files()
     for file in files:
         diff_text += f"File: {file.filename}\n"
         diff_text += f"Changes: +{file.additions} additions, -{file.deletions} deletions\n"
+        
         if file.patch:
-            diff_text += f"Diff:\n{file.patch}\n"
+            # Only take first 500 chars of each file's diff
+            patch_preview = file.patch[:500]
+            if len(file.patch) > 500:
+                patch_preview += "\n... [file diff truncated]"
+            diff_text += f"Diff preview:\n{patch_preview}\n"
+        
         diff_text += "\n---\n\n"
 
-        # Stop if diff is getting too large
-        if len(diff_text) > 4000:
-            diff_text += "\n[Diff truncated — too large for single review]"
+        # Stop at 5000 chars total
+        if len(diff_text) > 5000:
+            diff_text += "\n[Additional files truncated]"
             break
 
     return diff_text
@@ -131,25 +141,62 @@ Pull Request Diff:
 {diff}"""
 
 def parse_review_response(response_text: str) -> ReviewResult:
-    # Strip markdown links aggressively  
     response_text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', response_text)
     response_text = re.sub(r'\[([^\]]*)\]', r'\1', response_text)
-    
-    # Fix empty array fields
-    response_text = re.sub(r':\s*,', ': [],', response_text)
-    response_text = re.sub(r':\s*\n\s*}', ': []\n}', response_text)
 
+    #Strip code blocks FIRST before anything else
     cleaned = response_text.strip()
+    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+    cleaned = cleaned.strip()
 
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```(?:json)?\n?', '', cleaned)
-        cleaned = re.sub(r'\n?```$', '', cleaned)
+    cleaned = re.sub(r':\s*,', ': [],', cleaned)
+    cleaned = re.sub(r':\s*\n\s*}', ': []\n}', cleaned)
+
+    #Fix truncated JSON
+    open_braces = cleaned.count('{')
+    close_braces = cleaned.count('}')
+    open_brackets = cleaned.count('[')
+    close_brackets = cleaned.count(']')
+
+    if open_braces != close_braces or open_brackets != close_brackets:
+        print("WARNING: JSON appears truncated. Fixing...")
+
+        lines = cleaned.split('\n')
+        while lines:
+            last_line = lines[-1].strip()
+            if not any(last_line.endswith(c) for c in ['}', ']', '"', 'true', 'false', 'null']):
+                lines.pop()
+            else:
+                break
+        cleaned = '\n'.join(lines)
+
+        cleaned = cleaned.rstrip().rstrip(',')
+
+        while cleaned.count('[') > cleaned.count(']'):
+            cleaned += ']'
+        while cleaned.count('{') > cleaned.count('}'):
+            cleaned += '}'
 
     try:
         data = json.loads(cleaned)
-        
-        # Convert filenames back: test_path_py → test_path.py
-        # Find the last underscore before a known extension and replace with dot
+
+        if isinstance(data, str):
+            print("WARNING: Double encoded JSON detected, parsing again...")
+            data = json.loads(data)
+
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Expected JSON object but got {type(data).__name__}. Raw response: {response_text[:200]}"
+            )
+
+        for field in ['bugs', 'style_issues', 'suggestions']:
+            if isinstance(data.get(field), dict):
+                data[field] = [data[field]]
+            elif data.get(field) is None:
+                data[field] = []
+
         def fix_filename(filename: str) -> str:
             for ext in ['_py', '_js', '_ts', '_go', '_java', '_rb', '_md', '_yml', '_yaml', '_json']:
                 if filename.endswith(ext):
@@ -164,6 +211,7 @@ def parse_review_response(response_text: str) -> ReviewResult:
             suggestion['file'] = fix_filename(suggestion.get('file', ''))
 
         return ReviewResult(**data)
+
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=500,
@@ -187,18 +235,45 @@ def review_code(request: ReviewRequest):
 
 @app.post("/review-pr")
 def review_pr(request: PRReviewRequest):
-    diff = extract_pr_diff(request.pr_url)
+    
+    try:
+        diff = extract_pr_diff(request.pr_url)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not fetch from GitHub. Make sure the URL is correct and the PR is public. Error: {str(e)}"
+        )
+        
     prompt = build_review_prompt(diff)
     
-    # First attempt
-    response = model.generate_content(prompt)
-    
-    # If response looks truncated, try again with even smaller diff
-    if len(response.text) < 200 or response.text.count('{') != response.text.count('}'):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            break
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower():
+                if attempt < max_retries -1:
+                    wait_time = 60 * (attempt + +1)
+                    print(f"rate limited. Waiting {wait_time} seconds before retry {attempt +2}/{max_retries}...")
+                    time.sleept(wait_time)
+                else:
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Gemini API rate limit reached. Please wait a few minutes and try again."
+                    )
+    if response.text.count("{") != response.text.count("}"):
         print("Response looks truncated, retrying with smaller diff...")
         diff = diff[:2000] + "\n[Diff truncated for retry]"
-        prompt = build_review_prompt(diff)
-        response = model.generate_content(prompt)
+        promt = build_review_prompt(diff)
+        try:
+            response = model.generate_content(promt)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Retry failed: {str(e)}"
+            )
     
     review = parse_review_response(response.text)
     return {
