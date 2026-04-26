@@ -1,0 +1,21 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #0d1117;
+}
+
+input::placeholder {
+  color: #6e7681;
+}
+
+input:focus {
+  border-color: #388bfd !important;
+}
+
+button:hover:not(:disabled) {
+  background: #2ea043 !important;
+}
