@@ -58,6 +58,8 @@ function IssueCard({ issue, type }) {
 }
 
 function ReviewResult({ result, prUrl }) {
+  // result = { pr_url, review: { summary, bugs, style_issues, suggestions, overall_severity, approve } }
+  const review = result.review
   const sections = [
     { key: "bugs", label: "Bugs", icon: "⚠" },
     { key: "style_issues", label: "Style Issues", icon: "◈" },
@@ -82,18 +84,18 @@ function ReviewResult({ result, prUrl }) {
             <span style={{ color: "#6e7681", fontFamily: "monospace", fontSize: "13px" }}>
               {prUrl.replace("https://github.com/", "")}
             </span>
-            <SeverityBadge severity={result.overall_severity} />
+            <SeverityBadge severity={review.overall_severity} />
             <span style={{
-              color: result.approve ? "#4ade80" : "#ef4444",
+              color: review.approve ? "#4ade80" : "#ef4444",
               fontFamily: "monospace",
               fontSize: "13px",
               fontWeight: "600"
             }}>
-              {result.approve ? "✓ APPROVE" : "✗ REQUEST CHANGES"}
+              {review.approve ? "✓ APPROVE" : "✗ REQUEST CHANGES"}
             </span>
           </div>
           <p style={{ color: "#c9d1d9", fontSize: "14px", margin: 0, lineHeight: "1.6" }}>
-            {result.summary}
+            {review.summary}
           </p>
         </div>
       </div>
@@ -101,9 +103,9 @@ function ReviewResult({ result, prUrl }) {
       {/* Stats row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "20px" }}>
         {[
-          { label: "Bugs", count: result.bugs.length, color: "#ef4444" },
-          { label: "Style Issues", count: result.style_issues.length, color: "#facc15" },
-          { label: "Suggestions", count: result.suggestions.length, color: "#60a5fa" }
+          { label: "Bugs", count: review.bugs.length, color: "#ef4444" },
+          { label: "Style Issues", count: review.style_issues.length, color: "#facc15" },
+          { label: "Suggestions", count: review.suggestions.length, color: "#60a5fa" }
         ].map(stat => (
           <div key={stat.label} style={{
             background: "#161b22",
@@ -122,7 +124,7 @@ function ReviewResult({ result, prUrl }) {
 
       {/* Issue sections */}
       {sections.map(section => (
-        result.review[section.key]?.length > 0 && (
+        review[section.key]?.length > 0 && (
           <div key={section.key} style={{ marginBottom: "24px" }}>
             <h3 style={{
               color: "#8b949e",
@@ -134,9 +136,9 @@ function ReviewResult({ result, prUrl }) {
               paddingBottom: "8px",
               borderBottom: "1px solid #21262d"
             }}>
-              {section.icon} {section.label} ({result[section.key].length})
+              {section.icon} {section.label} ({review[section.key].length})
             </h3>
-            {result[section.key].map((issue, i) => (
+            {review[section.key].map((issue, i) => (
               <IssueCard key={i} issue={issue} type={section.key} />
             ))}
           </div>
@@ -155,11 +157,6 @@ export default function App() {
 
   async function handleReview() {
     if (!prUrl.trim()) return
-    // delete tomorrow
-    const response = await axios.post(`${API_URL}/review-pr`, { pr_url: prUrl })
-    console.log("FULL RESPONSE:", JSON.stringify(response.data))
-    setResult(response.data)
-
     setLoading(true)
     setError(null)
     setResult(null)
@@ -275,7 +272,7 @@ export default function App() {
         )}
 
         {/* Results */}
-        {result && <ReviewResult result={result.review} prUrl={result.pr_url} />}
+        {result && <ReviewResult result={result} prUrl={result.pr_url} />}
 
         {/* History */}
         {history.length > 0 && (
