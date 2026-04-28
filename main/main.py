@@ -1,3 +1,7 @@
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +26,27 @@ model = genai.GenerativeModel(
     )
 )
 github_client = Github(os.getenv("GITHUB_API_KEY"))
+
+DATABASE_URL = "sqlite:///./reviews.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class ReviewRecord(Base):
+    __tablename__ = "reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pr_url = Column(String, index=True)
+    summary = Column(Text)
+    overall_severity = Column(String)
+    approve = Column(Boolean)
+    bugs_count = Column(Integer)
+    style_issues_count = Column(Integer)
+    suggestions_count = Column(Integer)
+    full_review = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -60,6 +85,28 @@ class ReviewResult(BaseModel):
     suggestions: List[Suggestion]
     overall_severity: str
     approve: bool
+    
+def save_review(pr_url: str, review: ReviewResult):
+    db = SessionLocal()
+    try:
+        record = ReviewRecord(
+            pr_url=pr_url,
+            summary=review.summary,
+            overall_severity=review.overall_severity,
+            approve=review.approve,
+            bugs_count=len(review.bugs),
+            style_issues_count=len(review.style_issues),
+            suggestions_count=len(review.suggestions),
+            full_review=json.dumps(review.model_dump())
+        )
+        db.add(record)
+        db.commit()
+        print(f"Saved review for {pr_url} to database")
+    except Exception as e:
+        print(f"Failed to save review: {e}")
+        db.rollback()
+    finally:
+        db.close()
     
 def extract_pr_diff(pr_url: str) -> str:
     parts = pr_url.strip("/").split("/")
@@ -266,7 +313,7 @@ def review_pr(request: PRReviewRequest):
                 if attempt < max_retries -1:
                     wait_time = 60 * (attempt + +1)
                     print(f"rate limited. Waiting {wait_time} seconds before retry {attempt +2}/{max_retries}...")
-                    time.sleept(wait_time)
+                    time.sleep(wait_time)
                 else:
                     raise HTTPException(
                         status_code=429,
@@ -275,9 +322,9 @@ def review_pr(request: PRReviewRequest):
     if response.text.count("{") != response.text.count("}"):
         print("Response looks truncated, retrying with smaller diff...")
         diff = diff[:2000] + "\n[Diff truncated for retry]"
-        promt = build_review_prompt(diff)
+        prompt = build_review_prompt(diff)
         try:
-            response = model.generate_content(promt)
+            response = model.generate_content(prompt)
         except Exception as e:
             raise HTTPException(
                 status_code=500,
@@ -285,7 +332,40 @@ def review_pr(request: PRReviewRequest):
             )
     
     review = parse_review_response(response.text)
+    save_review(request.pr_url, review)
+    
     return {
         "pr_url": request.pr_url,
         "review": review.model_dump()
     }
+
+@app.get("/stats")
+def get_stats():
+    db = SessionLocal()
+    try:
+        total_reviews = db.query(ReviewRecord).count()
+        total_bugs = db.query(ReviewRecord).with_entities(
+            ReviewRecord.bugs_count
+        ).all()
+        bugs_sum = sum(r.bugs_count for r in total_bugs)
+        
+        recent = db.query(ReviewRecord).order_by(
+            ReviewRecord.created_at.desc()
+        ).limit(10).all()
+        
+        return {
+            "total_reviews": total_reviews,
+            "total_bugs_found": bugs_sum,
+            "recent_reviews": [
+                {
+                    "pr_url": r.pr_url,
+                    "overall_severity": r.overall_severity,
+                    "approve": r.approve,
+                    "bugs_count": r.bugs_count,
+                    "created_at": r.created_at.isoformat()
+                }
+                for r in recent
+            ]
+        }
+    finally:
+        db.close()
