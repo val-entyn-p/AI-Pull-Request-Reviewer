@@ -44,7 +44,7 @@ class ReviewRecord(Base):
     style_issues_count = Column(Integer)
     suggestions_count = Column(Integer)
     full_review = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
 Base.metadata.create_all(bind=engine)
 
@@ -107,6 +107,71 @@ def save_review(pr_url: str, review: ReviewResult):
         db.rollback()
     finally:
         db.close()
+        
+def get_pr_author_info(pr_url: str) -> dict:
+    parts = pr_url.strip("/").split("/")
+    owner = parts[-4]
+    repo_name = parts[-3]
+    pr_number = int(parts[-1])
+
+    repo = github_client.get_repo(f"{owner}/{repo_name}")
+    pr = repo.get_pull(pr_number)
+    author = pr.user
+
+    try:
+        commits = repo.get_commits(author=author.login)
+        commit_count = commits.totalCount
+    except:
+        commit_count = 0
+
+    try:
+        from github import Github
+        g = Github(os.getenv("GITHUB_API_KEY"))
+        issues = g.search_issues(
+            f"repo:{owner}/{repo_name} is:pr author:{author.login}"
+        )
+        pr_count = issues.totalCount
+    except:
+        pr_count = 0
+
+    account_age_days = (datetime.utcnow() - author.created_at.replace(tzinfo=None)).days
+    account_age_years = round(account_age_days / 365, 1)
+
+    is_maintainer = False
+    try:
+        permission = repo.get_collaborator_permission(author.login)
+        is_maintainer = permission in ["admin", "write"]
+    except:
+        is_maintainer = False
+
+    if is_maintainer:
+        trust_level = "maintainer"
+    elif commit_count > 10:
+        trust_level = "contributor"
+    elif commit_count > 0:
+        trust_level = "occasional"
+    else:
+        trust_level = "first-timer"
+
+    return {
+        "username": author.login,
+        "avatar_url": author.avatar_url,
+        "profile_url": author.html_url,
+        "name": author.name or author.login,
+        "bio": author.bio or "",
+        "account_age_years": account_age_years,
+        "public_repos": author.public_repos,
+        "followers": author.followers,
+        "commit_count_to_repo": commit_count,
+        "pr_count_to_repo": pr_count,
+        "pr_title": pr.title,
+        "pr_state": pr.state,
+        "pr_commits": pr.commits,
+        "pr_changed_files": pr.changed_files,
+        "pr_additions": pr.additions,
+        "pr_deletions": pr.deletions,
+        "trust_level": trust_level
+    }
     
 def extract_pr_diff(pr_url: str):
     parts = pr_url.strip("/").split("/")
@@ -345,3 +410,14 @@ def get_stats():
         }
     finally:
         db.close()
+        
+@app.get("/pr-author")
+def get_pr_author(pr_url: str):
+    try:
+        author_info = get_pr_author_info(pr_url)
+        return author_info
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not fetch PR author info. Error: {str(e)}"
+        )

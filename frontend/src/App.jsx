@@ -11,6 +11,20 @@ const SEVERITY_COLORS = {
   critical: "#ef4444"
 }
 
+const TRUST_COLORS = {
+  "maintainer": "#a78bfa",
+  "contributor": "#4ade80",
+  "occasional": "#facc15",
+  "first-timer": "#60a5fa"
+}
+
+const TRUST_LABELS = {
+  "maintainer": "⚡ Maintainer",
+  "contributor": "✓ Contributor",
+  "occasional": "◎ Occasional",
+  "first-timer": "★ First Timer"
+}
+
 function SeverityBadge({ severity }) {
   return (
     <span style={{
@@ -26,6 +40,23 @@ function SeverityBadge({ severity }) {
       letterSpacing: "0.05em"
     }}>
       {severity}
+    </span>
+  )
+}
+
+function TrustBadge({ level }) {
+  return (
+    <span style={{
+      background: TRUST_COLORS[level] + "22",
+      color: TRUST_COLORS[level],
+      border: `1px solid ${TRUST_COLORS[level]}44`,
+      padding: "2px 10px",
+      borderRadius: "4px",
+      fontSize: "12px",
+      fontFamily: "monospace",
+      fontWeight: "600"
+    }}>
+      {TRUST_LABELS[level]}
     </span>
   )
 }
@@ -53,6 +84,124 @@ function IssueCard({ issue, type }) {
       <p style={{ color: "#8b949e", fontSize: "14px", margin: 0, lineHeight: "1.5" }}>
         {issue.description}
       </p>
+    </div>
+  )
+}
+
+function AuthorTab({ author }) {
+  return (
+    <div style={{ marginTop: "24px" }}>
+      {/* Author header */}
+      <div style={{
+        background: "#161b22",
+        border: "1px solid #30363d",
+        borderRadius: "10px",
+        padding: "20px 24px",
+        marginBottom: "16px",
+        display: "flex",
+        alignItems: "center",
+        gap: "20px"
+      }}>
+        <img
+          src={author.avatar_url}
+          alt={author.username}
+          style={{ width: "64px", height: "64px", borderRadius: "50%", border: "2px solid #30363d" }}
+        />
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "6px" }}>
+            <span style={{ color: "#e6edf3", fontSize: "18px", fontWeight: "600" }}>
+              {author.name}
+            </span>
+            <TrustBadge level={author.trust_level} />
+          </div>
+          <a
+            href={author.profile_url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "#6e7681", fontFamily: "monospace", fontSize: "13px", textDecoration: "none" }}
+          >
+            @{author.username} ↗
+          </a>
+          {author.bio && (
+            <p style={{ color: "#8b949e", fontSize: "13px", margin: "6px 0 0 0" }}>{author.bio}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
+        {[
+          { label: "Commits to Repo", value: author.commit_count_to_repo, color: "#4ade80" },
+          { label: "PRs to Repo", value: author.pr_count_to_repo, color: "#60a5fa" },
+          { label: "PR Commits", value: author.pr_commits, color: "#facc15" },
+        ].map(stat => (
+          <div key={stat.label} style={{
+            background: "#161b22",
+            border: "1px solid #30363d",
+            borderRadius: "8px",
+            padding: "16px",
+            textAlign: "center"
+          }}>
+            <div style={{ color: stat.color, fontSize: "28px", fontWeight: "700", fontFamily: "monospace" }}>
+              {stat.value}
+            </div>
+            <div style={{ color: "#6e7681", fontSize: "12px", marginTop: "4px" }}>{stat.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* PR details */}
+      <div style={{
+        background: "#161b22",
+        border: "1px solid #30363d",
+        borderRadius: "10px",
+        padding: "20px 24px",
+        marginBottom: "16px"
+      }}>
+        <div style={{
+          color: "#6e7681", fontSize: "12px", fontFamily: "monospace",
+          textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "14px"
+        }}>
+          // PR Details
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          {[
+            { label: "Files Changed", value: author.pr_changed_files },
+            { label: "Lines Added", value: `+${author.pr_additions}` },
+            { label: "Lines Removed", value: `-${author.pr_deletions}` },
+            { label: "Account Age", value: `${author.account_age_years} years` },
+            { label: "Public Repos", value: author.public_repos },
+            { label: "Followers", value: author.followers }
+          ].map(item => (
+            <div key={item.label} style={{
+              display: "flex", justifyContent: "space-between",
+              padding: "8px 0", borderBottom: "1px solid #21262d"
+            }}>
+              <span style={{ color: "#6e7681", fontSize: "13px" }}>{item.label}</span>
+              <span style={{ color: "#e6edf3", fontSize: "13px", fontFamily: "monospace" }}>{item.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Trust explanation */}
+      <div style={{
+        background: "#161b22",
+        border: `1px solid ${TRUST_COLORS[author.trust_level]}33`,
+        borderLeft: `3px solid ${TRUST_COLORS[author.trust_level]}`,
+        borderRadius: "6px",
+        padding: "12px 16px",
+      }}>
+        <div style={{ color: TRUST_COLORS[author.trust_level], fontSize: "12px", fontFamily: "monospace", marginBottom: "4px" }}>
+          {TRUST_LABELS[author.trust_level]}
+        </div>
+        <p style={{ color: "#8b949e", fontSize: "13px", margin: 0 }}>
+          {author.trust_level === "maintainer" && "This contributor has write access to the repository. High trust."}
+          {author.trust_level === "contributor" && `This contributor has made ${author.commit_count_to_repo} commits to this repo. Established trust.`}
+          {author.trust_level === "occasional" && `This contributor has made ${author.commit_count_to_repo} commit(s) to this repo. Review carefully.`}
+          {author.trust_level === "first-timer" && "This is the author's first contribution to this repo. Review with extra care."}
+        </p>
+      </div>
     </div>
   )
 }
@@ -154,23 +303,31 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [history, setHistory] = useState([])
+  const [author, setAuthor] = useState(null)
+  const [activeTab, setActiveTab] = useState("review")
 
   async function handleReview() {
-    if (!prUrl.trim()) return
-    setLoading(true)
-    setError(null)
-    setResult(null)
+  if (!prUrl.trim()) return
+  setLoading(true)
+  setError(null)
+  setResult(null)
+  setAuthor(null)
+  setActiveTab("review")
 
-    try {
-      const response = await axios.post(`${API_URL}/review-pr`, { pr_url: prUrl })
-      setResult(response.data)
-      setHistory(prev => [{ prUrl, result: response.data, time: new Date().toLocaleTimeString() }, ...prev.slice(0, 9)])
-    } catch (err) {
-      setError(err.response?.data?.detail || "Something went wrong. Is your backend running?")
-    } finally {
-      setLoading(false)
-    }
+  try {
+    const [reviewRes, authorRes] = await Promise.all([
+      axios.post(`${API_URL}/review-pr`, { pr_url: prUrl }),
+      axios.get(`${API_URL}/pr-author`, { params: { pr_url: prUrl } })
+    ])
+    setResult(reviewRes.data)
+    setAuthor(authorRes.data)
+    setHistory(prev => [{ prUrl, result: reviewRes.data, time: new Date().toLocaleTimeString() }, ...prev.slice(0, 9)])
+  } catch (err) {
+    setError(err.response?.data?.detail || "Something went wrong. Is your backend running?")
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <div style={{
@@ -271,8 +428,39 @@ export default function App() {
           </div>
         )}
 
-        {/* Results */}
-        {result && <ReviewResult result={result} prUrl={result.pr_url} />}
+        {/* Tabs */}
+        {result && (
+          <>
+            <div style={{ display: "flex", gap: "4px", marginTop: "32px", borderBottom: "1px solid #21262d" }}>
+              {[
+                { key: "review", label: "// Code Review" },
+                { key: "author", label: "// Author Info" }
+              ].map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  style={{
+                    background: activeTab === tab.key ? "#161b22" : "transparent",
+                    color: activeTab === tab.key ? "#e6edf3" : "#6e7681",
+                    border: "1px solid",
+                    borderColor: activeTab === tab.key ? "#30363d" : "transparent",
+                    borderBottom: activeTab === tab.key ? "1px solid #161b22" : "1px solid transparent",
+                    borderRadius: "6px 6px 0 0",
+                    padding: "8px 16px",
+                    fontFamily: "monospace",
+                    fontSize: "13px",
+                    cursor: "pointer",
+                    marginBottom: "-1px"
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {activeTab === "review" && <ReviewResult result={result} prUrl={result.pr_url} />}
+            {activeTab === "author" && author && <AuthorTab author={author} />}
+          </>
+        )}
 
         {/* History */}
         {history.length > 0 && (
