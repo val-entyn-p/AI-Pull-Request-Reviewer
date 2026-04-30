@@ -108,7 +108,7 @@ def save_review(pr_url: str, review: ReviewResult):
     finally:
         db.close()
     
-def extract_pr_diff(pr_url: str) -> str:
+def extract_pr_diff(pr_url: str):
     parts = pr_url.strip("/").split("/")
     owner = parts[-4]
     repo_name = parts[-3]
@@ -125,75 +125,49 @@ def extract_pr_diff(pr_url: str) -> str:
     diff_text += f"Total additions: {pr.additions}\n"
     diff_text += f"Total deletions: {pr.deletions}\n\n"
 
+    is_large_pr = pr.additions + pr.deletions > 500 or pr.changed_files > 10
+
     files = pr.get_files()
     for file in files:
         diff_text += f"File: {file.filename}\n"
         diff_text += f"Changes: +{file.additions} additions, -{file.deletions} deletions\n"
-        
-        if file.patch:
-            # Only take first 500 chars of each file's diff
-            patch_preview = file.patch[:500]
-            if len(file.patch) > 500:
+
+        if file.patch and not is_large_pr:
+            patch_preview = file.patch[:300]
+            if len(file.patch) > 300:
                 patch_preview += "\n... [file diff truncated]"
             diff_text += f"Diff preview:\n{patch_preview}\n"
-        
+
         diff_text += "\n---\n\n"
 
-        # Stop at 5000 chars total
-        if len(diff_text) > 5000:
+        if len(diff_text) > 3000:
             diff_text += "\n[Additional files truncated]"
             break
 
-    return diff_text
+    return diff_text, is_large_pr
 
-def build_review_prompt(diff: str) -> str:
-    return f"""You are an expert code reviewer. Analyze this GitHub pull request diff and return a structured review.
+def build_review_prompt(diff: str, is_large_pr: bool = False) -> str:
+    if is_large_pr:
+        return f"""Analyze this large GitHub PR and return ONLY this JSON, no markdown, no code blocks:
+{{"summary":"one short sentence max 50 words","bugs":[],"style_issues":[],"suggestions":[{{"file":"general","description":"one suggestion max 50 words"}}],"overall_severity":"low|medium|high|critical","approve":true}}
 
-    IMPORTANT: Return ONLY a valid JSON object. No markdown, no explanation, no code blocks. Just raw JSON.
+Keep every string field under 50 words. Return raw JSON only.
 
-The JSON must follow this exact structure:
-{{
-  "summary": "2-3 sentence overview of what this PR does and its quality",
-  "bugs": [
-    {{
-      "file": "filename where bug exists",
-      "line": null or line number if identifiable,
-      "description": "clear description of the bug",
-      "severity": "low|medium|high|critical"
-    }}
-  ],
-  "style_issues": [
-    {{
-      "file": "filename",
-      "description": "description of the style issue"
-    }}
-  ],
-  "suggestions": [
-    {{
-      "file": "filename",
-      "description": "suggested improvement"
-    }}
-  ],
-  "overall_severity": "low|medium|high|critical",
-  "approve": true or false
-}}
+PR Info:
+{diff}"""
+
+    return f"""You are a code reviewer. Analyze this GitHub PR diff and return ONLY a JSON object, no markdown, no code blocks.
+
+JSON structure:
+{{"summary":"one sentence summary","bugs":[{{"file":"filename","line":null,"description":"bug description","severity":"low|medium|high|critical"}}],"style_issues":[{{"file":"filename","description":"issue"}}],"suggestions":[{{"file":"filename","description":"suggestion"}}],"overall_severity":"low|medium|high|critical","approve":true}}
 
 Rules:
-- severity must be exactly one of: low, medium, high, critical
-- overall_severity must be exactly one of: low, medium, high, critical
-- approve should be true only if the PR is safe to merge as-is
-- ALWAYS use empty arrays [] for bugs, style_issues, and suggestions if there are none. Never leave them blank or null.
-- File names must be plain text only. Never use markdown links. Write exactly: tests/test_path.py
-- Do NOT use markdown of any kind inside JSON string values
-- No backticks, no bold, no hyperlinks inside any JSON value
+- Return ONLY raw JSON, nothing else
+- Empty arrays [] if nothing found
+- Filenames as plain text, no markdown links
+- Keep all descriptions under 100 characters
 
-CRITICAL: Your response must be pure JSON only.
-- Write ALL filenames using underscores instead of dots. Example: tests/test_path_py instead of tests/test_path.py
-- Do NOT use markdown of any kind inside JSON string values
-- Do NOT convert filenames into hyperlinks
-- ALWAYS use empty arrays [] never leave array fields blank
-
-Pull Request Diff:
+PR Diff:
 {diff}"""
 
 def parse_review_response(response_text: str) -> ReviewResult:
@@ -291,17 +265,16 @@ def review_code(request: ReviewRequest):
 
 @app.post("/review-pr")
 def review_pr(request: PRReviewRequest):
-    
     try:
-        diff = extract_pr_diff(request.pr_url)
+        diff, is_large_pr = extract_pr_diff(request.pr_url)
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Could not fetch from GitHub. Make sure the URL is correct and the PR is public. Error: {str(e)}"
+            detail=f"Could not fetch PR from GitHub. Error: {str(e)}"
         )
-        
-    prompt = build_review_prompt(diff)
-    
+
+    prompt = build_review_prompt(diff, is_large_pr)
+
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -310,30 +283,33 @@ def review_pr(request: PRReviewRequest):
         except Exception as e:
             error_str = str(e)
             if "429" in error_str or "quota" in error_str.lower():
-                if attempt < max_retries -1:
-                    wait_time = 60 * (attempt + +1)
-                    print(f"rate limited. Waiting {wait_time} seconds before retry {attempt +2}/{max_retries}...")
+                if attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)
+                    print(f"Rate limited. Waiting {wait_time}s before retry {attempt + 2}/{max_retries}...")
                     time.sleep(wait_time)
                 else:
                     raise HTTPException(
                         status_code=429,
                         detail="Gemini API rate limit reached. Please wait a few minutes and try again."
                     )
-    if response.text.count("{") != response.text.count("}"):
-        print("Response looks truncated, retrying with smaller diff...")
-        diff = diff[:2000] + "\n[Diff truncated for retry]"
-        prompt = build_review_prompt(diff)
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Gemini API error: {error_str}"
+                )
+
+    if response.text.count('{') != response.text.count('}'):
+        print("Response truncated, retrying with smaller diff...")
+        diff = diff[:1000] + "\n[Diff truncated for retry]"
+        prompt = build_review_prompt(diff, is_large_pr)
         try:
             response = model.generate_content(prompt)
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Retry failed: {str(e)}"
-            )
-    
+            raise HTTPException(status_code=500, detail=f"Retry failed: {str(e)}")
+
     review = parse_review_response(response.text)
     save_review(request.pr_url, review)
-    
+
     return {
         "pr_url": request.pr_url,
         "review": review.model_dump()
