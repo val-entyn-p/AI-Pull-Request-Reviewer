@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 from pathlib import Path
 from github import Github
 from typing import List, Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import json
 import re
@@ -17,14 +18,8 @@ import time
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel(
-    "gemini-2.5-flash",
-    generation_config=genai.GenerationConfig(
-        max_output_tokens=8192,
-        temperature=0.1
-    )
-)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
 github_client = Github(os.getenv("GITHUB_API_KEY"))
 
 DATABASE_URL = "sqlite:///./reviews.db"
@@ -325,7 +320,14 @@ def root():
 @app.post("/review")
 def review_code(request: ReviewRequest):
     prompt = f"Review this code for bugs and issues:\n\n{request.code}"
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+    model="gemini-2.0-flash",
+    contents=prompt,
+    config=types.GenerateContentConfig(
+        max_output_tokens=8192,
+        temperature=0.1
+    )
+)
     return {"review": response.text}
 
 @app.post("/review-pr")
@@ -343,7 +345,14 @@ def review_pr(request: PRReviewRequest):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=8192,
+                    temperature=0.1
+                )
+            )
             break
         except Exception as e:
             error_str = str(e)
@@ -368,7 +377,14 @@ def review_pr(request: PRReviewRequest):
         diff = diff[:1000] + "\n[Diff truncated for retry]"
         prompt = build_review_prompt(diff, is_large_pr)
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=8192,
+                    temperature=0.1
+                )
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Retry failed: {str(e)}")
 
