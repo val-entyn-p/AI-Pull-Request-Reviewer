@@ -22,8 +22,16 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 github_client = Github(os.getenv("GITHUB_API_KEY"))
 
-DATABASE_URL = "sqlite:///./reviews.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+DATABASE_URL = os.getenv("postgresql://postgres:OjhirPWmilkXYOxsFlrZPNgPHjNtAyko@postgres.railway.internal:5432/railway", "sqlite:///./reviews.db")
+
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+if "sqlite" in DATABASE_URL:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
