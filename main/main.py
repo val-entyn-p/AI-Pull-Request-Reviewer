@@ -324,7 +324,7 @@ def root():
 def review_code(request: ReviewRequest):
     prompt = f"Review this code for bugs and issues:\n\n{request.code}"
     response = client.models.generate_content(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     contents=prompt,
     config=types.GenerateContentConfig(
         max_output_tokens=8192,
@@ -349,7 +349,7 @@ def review_pr(request: PRReviewRequest):
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     max_output_tokens=8192,
@@ -381,7 +381,7 @@ def review_pr(request: PRReviewRequest):
         prompt = build_review_prompt(diff, is_large_pr)
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     max_output_tokens=8192,
