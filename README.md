@@ -103,13 +103,15 @@ Visit `http://localhost:5173`
 
 ## Project Structure
 
+```
 AI-Code-Review/
 ├── main/
 │   ├── main.py          # FastAPI backend
 │   └── requirements.txt
 └── frontend/
-└── src/
-└── App.jsx      # React frontend
+    └── src/
+        └── App.jsx      # React frontend
+```
 
 ---
 
